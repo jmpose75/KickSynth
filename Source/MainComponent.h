@@ -19,22 +19,27 @@ public:
     void resized() override;
 
 private:
-    // ---- Oscilador y parámetros del Bombo (Kick) ----
+    // ---- Osciladores y parámetros del Bombo (Kick + Detune) ----
     std::atomic<float> volume{ 0.5f };
-    std::atomic<float> punchHz{ 180.0f }; // Salto de frecuencia inicial del golpe
-    std::atomic<float> pitchDecay{ 0.045f }; // Tiempo de caída del tono (en segundos)
+    std::atomic<float> punchHz{ 180.0f };
+    std::atomic<float> pitchDecay{ 0.045f };
+    std::atomic<float> detuneCents{ 15.0f };  // Desafinación en cents (-50 a +50)
+    std::atomic<float> detuneMix{ 0.5f };   // Volumen del segundo oscilador (0 a 1)
 
     double sr = 44100.0;
-    float phase = 0.0f;
-    float frequency = 55.0f; // Nota base grave (La1 = 55 Hz por defecto)
-    float pitchEnv = 0.0f;   // Envolvente de tono (arranca en 1.0 al golpear)
+    float phase = 0.0f;   // Fase Oscilador 1 (principal)
+    float phase2 = 0.0f;   // Fase Oscilador 2 (desafinado)
+    float frequency = 55.0f;
+    float pitchEnv = 0.0f;
 
-    juce::Slider volumeSlider, punchSlider, pitchDecaySlider;
+    juce::Slider volumeSlider, punchSlider, pitchDecaySlider, detuneSlider, detuneMixSlider;
     juce::Label  volumeLabel{ {}, "Volumen" };
     juce::Label  punchLabel{ {}, "Punch (Hz)" };
     juce::Label  pitchDecayLabel{ {}, "Pitch Decay" };
+    juce::Label  detuneLabel{ {}, "Detune (cents)" };
+    juce::Label  detuneMixLabel{ {}, "Detune Mix" };
 
-    // ---- Envolvente ADSR de amplitud (configurada percusiva por defecto) ----
+    // ---- Envolvente ADSR de amplitud ----
     std::atomic<float> attack{ 0.001f };
     std::atomic<float> decay{ 0.28f };
     std::atomic<float> sustain{ 0.0f };

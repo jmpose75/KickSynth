@@ -2,10 +2,12 @@
 
 MainComponent::MainComponent()
 {
-    // ---- Controles del Bombo (Kick) ----
+    // ---- Controles del Bombo y Detune ----
     setupSlider(volumeSlider, volumeLabel, 0.0, 1.0, volume, "");
     setupSlider(punchSlider, punchLabel, 0.0, 500.0, punchHz, " Hz");
     setupSlider(pitchDecaySlider, pitchDecayLabel, 0.005, 0.300, pitchDecay, " s");
+    setupSlider(detuneSlider, detuneLabel, -50.0, 50.0, detuneCents, " ct");
+    setupSlider(detuneMixSlider, detuneMixLabel, 0.0, 1.0, detuneMix, "");
 
     // ---- Envolvente de Amplitud ----
     setupSlider(attackSlider, attackLabel, 0.001, 0.5, attack, " s");
@@ -18,7 +20,7 @@ MainComponent::MainComponent()
     addAndMakeVisible(midiLabel);
     midiLabel.setText("Toca notas graves (C1 - C2) con el mouse o teclas Z, X, C...", juce::dontSendNotification);
 
-    setSize(700, 520);
+    setSize(700, 580);
     setAudioChannels(0, 2);
 
     for (auto& input : juce::MidiInput::getAvailableDevices())
@@ -54,6 +56,7 @@ void MainComponent::prepareToPlay(int, double sampleRate)
 {
     sr = sampleRate;
     phase = 0.0f;
+    phase2 = 0.0f;
     stage = Idle;
     envelope = 0.0f;
     pitchEnv = 0.0f;
@@ -80,29 +83,44 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
     float baseFreq = frequency;
     float punch = punchHz;
     float pDecaySec = pitchDecay;
+    float cents = detuneCents;
+    float mix2 = detuneMix;
+
+    // Factor multiplicador de frecuencia para desafinar en cents (1200 cents = 1 octava)
+    float detuneFactor = std::pow(2.0f, cents / 1200.0f);
 
     // Coeficiente de caída exponencial por muestra para la envolvente de tono
     float pitchDecayCoeff = std::exp(-1.0f / (pDecaySec * (float)sr));
 
+    // Normalización suave para que al sumar ambos osciladores no sature
+    float normFactor = 1.0f / (1.0f + mix2);
+
     for (int i = 0; i < numSamples; ++i)
     {
-        // 1. Calculamos la frecuencia instantánea del bombo (nota grave + barrido del golpe)
-        float currentFreq = baseFreq + (punch * pitchEnv);
+        // 1. Calculamos las frecuencias instantáneas de ambos osciladores
+        float currentFreq1 = baseFreq + (punch * pitchEnv);
+        float currentFreq2 = currentFreq1 * detuneFactor;
 
-        // 2. Generamos la onda sinusoidal
-        float sample = std::sin(juce::MathConstants<float>::twoPi * phase);
+        // 2. Generamos ambos osciladores sinusoidales y los mezclamos
+        float osc1 = std::sin(juce::MathConstants<float>::twoPi * phase);
+        float osc2 = std::sin(juce::MathConstants<float>::twoPi * phase2);
+        float combinedOsc = (osc1 + osc2 * mix2) * normFactor;
 
         // 3. Aplicamos la envolvente de volumen y la velocity
-        sample = sample * nextEnvelopeValue() * velocityGain;
+        float sample = combinedOsc * nextEnvelopeValue() * velocityGain;
 
         int index = startSample + i;
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
             buffer.setSample(channel, index, sample * vol);
 
-        // 4. Avanzamos la fase del oscilador y hacemos caer la envolvente de tono
-        phase += currentFreq / (float)sr;
+        // 4. Avanzamos ambas fases y la envolvente de tono
+        phase += currentFreq1 / (float)sr;
         if (phase >= 1.0f)
             phase -= 1.0f;
+
+        phase2 += currentFreq2 / (float)sr;
+        if (phase2 >= 1.0f)
+            phase2 -= 1.0f;
 
         pitchEnv *= pitchDecayCoeff;
     }
@@ -121,17 +139,14 @@ void MainComponent::handleMidiMessage(const juce::MidiMessage& message)
     {
         currentNote = message.getNoteNumber();
 
-        // Bajamos una octava la afinación para que el teclado en pantalla (C3) suene grave como un bombo
         frequency = 440.0f * std::pow(2.0f, (currentNote - 81) / 12.0f);
         velocityGain = message.getVelocity() / 127.0f;
 
-        // Reiniciamos la fase en 0 para que cada golpe tenga el mismo ataque limpio sin clics
+        // Reiniciamos ambas fases en 0 para que el ataque sea limpio y potente
         phase = 0.0f;
+        phase2 = 0.0f;
 
-        // Disparamos la envolvente de tono al máximo
         pitchEnv = 1.0f;
-
-        // Disparamos la envolvente de volumen
         stage = Attack;
     }
     else if (message.isNoteOff())
@@ -223,20 +238,20 @@ void MainComponent::resized()
     auto area = getLocalBounds().reduced(20);
 
     juce::Slider* sliders[] = {
-        &volumeSlider, &punchSlider, &pitchDecaySlider,
+        &volumeSlider, &punchSlider, &pitchDecaySlider, &detuneSlider, &detuneMixSlider,
         &attackSlider, &decaySlider, &sustainSlider, &releaseSlider
     };
     juce::Label* labels[] = {
-        &volumeLabel, &punchLabel, &pitchDecayLabel,
+        &volumeLabel, &punchLabel, &pitchDecayLabel, &detuneLabel, &detuneMixLabel,
         &attackLabel, &decayLabel, &sustainLabel, &releaseLabel
     };
 
-    for (int i = 0; i < 7; ++i)
+    for (int i = 0; i < 9; ++i)
     {
-        auto row = area.removeFromTop(28);
-        labels[i]->setBounds(row.removeFromLeft(110));
+        auto row = area.removeFromTop(26);
+        labels[i]->setBounds(row.removeFromLeft(115));
         sliders[i]->setBounds(row);
-        area.removeFromTop(6);
+        area.removeFromTop(5);
     }
 
     area.removeFromTop(10);
