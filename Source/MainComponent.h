@@ -26,6 +26,7 @@ private:
     std::atomic<float> pitchDecay{ 0.045f };
     std::atomic<float> detuneCents{ 15.0f };
     std::atomic<float> detuneMix{ 0.4f };
+    std::atomic<int>   osc2Waveform{ 1 }; // 1: Seno, 2: Triangulo, 3: Sierra, 4: Cuadrada
 
     double sr = 44100.0;
     float phase = 0.0f;
@@ -39,6 +40,9 @@ private:
     juce::Label  pitchDecayLabel{ {}, "Pitch Decay" };
     juce::Label  detuneLabel{ {}, "Detune (cents)" };
     juce::Label  detuneMixLabel{ {}, "Detune Mix" };
+
+    juce::ComboBox osc2WaveCombo;
+    juce::Label    osc2WaveLabel{ {}, "Onda Osc 2" };
 
     // ---- Envolvente ADSR de amplitud ----
     std::atomic<float> attack{ 0.001f };
@@ -60,9 +64,9 @@ private:
     juce::Label  releaseLabel{ {}, "Release" };
 
     // ---- Efecto Delay (Buffer circular escrito a mano) ----
-    std::atomic<float> delayTimeSec{ 0.25f }; // Tiempo de retardo (s)
-    std::atomic<float> delayFeedback{ 0.40f }; // Realimentación (0 a 0.85)
-    std::atomic<float> delayMix{ 0.30f }; // Mezcla Dry/Wet (0 a 1)
+    std::atomic<float> delayTimeSec{ 0.25f };
+    std::atomic<float> delayFeedback{ 0.40f };
+    std::atomic<float> delayMix{ 0.30f };
 
     std::vector<float> delayBuffer;
     int delayWritePos = 0;

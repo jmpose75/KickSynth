@@ -9,6 +9,20 @@ MainComponent::MainComponent()
     setupSlider(detuneSlider, detuneLabel, -50.0, 50.0, detuneCents, " ct");
     setupSlider(detuneMixSlider, detuneMixLabel, 0.0, 1.0, detuneMix, "");
 
+    // ---- Selector de Forma de Onda para el Oscilador 2 ----
+    addAndMakeVisible(osc2WaveLabel);
+    addAndMakeVisible(osc2WaveCombo);
+    osc2WaveCombo.addItem("Seno (Sine)", 1);
+    osc2WaveCombo.addItem("Triangulo (Triangle)", 2);
+    osc2WaveCombo.addItem("Diente de Sierra (Saw)", 3);
+    osc2WaveCombo.addItem("Cuadrada (Square)", 4);
+    osc2WaveCombo.setSelectedId(1, juce::dontSendNotification);
+    osc2WaveCombo.setWantsKeyboardFocus(false); // Evita robarle el foco al teclado MIDI
+    osc2WaveCombo.onChange = [this]
+        {
+            osc2Waveform = osc2WaveCombo.getSelectedId();
+        };
+
     // ---- Envolvente de Amplitud ----
     setupSlider(attackSlider, attackLabel, 0.001, 0.5, attack, " s");
     setupSlider(decaySlider, decayLabel, 0.02, 1.5, decay, " s");
@@ -23,13 +37,13 @@ MainComponent::MainComponent()
     // ==== MIDI y Foco de Teclado ====
     addAndMakeVisible(keyboardComponent);
     keyboardComponent.setWantsKeyboardFocus(true);
-    keyboardComponent.setKeyPressBaseOctave(3); // Arranca en octava grave ideal para bombo
+    keyboardComponent.setKeyPressBaseOctave(3);
     juce::MessageManager::callAsync([this] { keyboardComponent.grabKeyboardFocus(); });
 
     addAndMakeVisible(midiLabel);
     midiLabel.setText("Teclas A S D F G H J K para tocar | Z / X para cambiar de octava", juce::dontSendNotification);
 
-    setSize(720, 660);
+    setSize(720, 695);
     setAudioChannels(0, 2);
 
     for (auto& input : juce::MidiInput::getAvailableDevices())
@@ -70,7 +84,6 @@ void MainComponent::prepareToPlay(int, double sampleRate)
     envelope = 0.0f;
     pitchEnv = 0.0f;
 
-    // Preparamos el buffer circular de Delay para soportar hasta 2 segundos
     int maxDelaySamples = (int)(sampleRate * 2.0);
     delayBuffer.assign(maxDelaySamples, 0.0f);
     delayWritePos = 0;
@@ -100,6 +113,7 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
     float pDecaySec = pitchDecay;
     float cents = detuneCents;
     float mix2 = detuneMix;
+    int   wave2 = osc2Waveform;
 
     float dTimeSec = delayTimeSec;
     float dFeedback = delayFeedback;
@@ -109,7 +123,6 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
     float pitchDecayCoeff = std::exp(-1.0f / (pDecaySec * (float)sr));
     float normFactor = 1.0f / (1.0f + mix2);
 
-    // Calculamos cuántas muestras hacia atrás leer en el buffer circular del Delay
     int delayBufferSize = (int)delayBuffer.size();
     int delaySamples = juce::jlimit(1, delayBufferSize - 1, (int)(dTimeSec * (float)sr));
 
@@ -119,15 +132,26 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
         float currentFreq1 = baseFreq + (punch * pitchEnv);
         float currentFreq2 = currentFreq1 * detuneFactor;
 
-        // 2. Osciladores sinusoidales
+        // 2. Oscilador 1 (Seno puro para mantener el cuerpo subgrave)
         float osc1 = std::sin(juce::MathConstants<float>::twoPi * phase);
-        float osc2 = std::sin(juce::MathConstants<float>::twoPi * phase2);
+
+        // 3. Oscilador 2 (Forma de onda elegida en el ComboBox, calculada a mano)
+        float osc2 = 0.0f;
+        if (wave2 == 1)      // Seno
+            osc2 = std::sin(juce::MathConstants<float>::twoPi * phase2);
+        else if (wave2 == 2) // Triángulo
+            osc2 = 4.0f * std::abs(phase2 - 0.5f) - 1.0f;
+        else if (wave2 == 3) // Diente de sierra
+            osc2 = 2.0f * phase2 - 1.0f;
+        else if (wave2 == 4) // Cuadrada
+            osc2 = (phase2 < 0.5f) ? 1.0f : -1.0f;
+
         float combinedOsc = (osc1 + osc2 * mix2) * normFactor;
 
-        // 3. Señal seca (Dry) con envolvente de volumen
+        // 4. Señal seca (Dry) con envolvente de volumen
         float drySample = combinedOsc * nextEnvelopeValue() * velocityGain;
 
-        // 4. Procesamiento de Delay (Buffer Circular)
+        // 5. Procesamiento de Delay (Buffer Circular)
         float outSample = drySample;
         if (delayBufferSize > 0)
         {
@@ -136,25 +160,21 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
                 readPos += delayBufferSize;
 
             float delayedSample = delayBuffer[readPos];
-
-            // Escribimos en el buffer: señal nueva + eco realimentado
             delayBuffer[delayWritePos] = drySample + (delayedSample * dFeedback);
 
-            // Avanzamos el puntero circular
             delayWritePos++;
             if (delayWritePos >= delayBufferSize)
                 delayWritePos = 0;
 
-            // Mezclamos señal directa con el eco
             outSample = drySample + (delayedSample * dMix);
         }
 
-        // 5. Salida estéreo con volumen maestro
+        // 6. Salida estéreo con volumen maestro
         int index = startSample + i;
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
             buffer.setSample(channel, index, outSample * vol);
 
-        // 6. Actualización de fases y envolvente de tono
+        // 7. Actualización de fases y envolvente de tono
         phase += currentFreq1 / (float)sr;
         if (phase >= 1.0f)
             phase -= 1.0f;
@@ -277,27 +297,42 @@ void MainComponent::resized()
 {
     auto area = getLocalBounds().reduced(20);
 
-    juce::Slider* sliders[] = {
-        &volumeSlider, &punchSlider, &pitchDecaySlider, &detuneSlider, &detuneMixSlider,
-        &attackSlider, &decaySlider, &sustainSlider, &releaseSlider,
-        &delayTimeSlider, &delayFeedbackSlider, &delayMixSlider
+    // Primeros 5 sliders (Volumen, Punch, Pitch Decay, Detune, Detune Mix)
+    juce::Slider* topSliders[] = {
+        &volumeSlider, &punchSlider, &pitchDecaySlider, &detuneSlider, &detuneMixSlider
     };
-    juce::Label* labels[] = {
-        &volumeLabel, &punchLabel, &pitchDecayLabel, &detuneLabel, &detuneMixLabel,
-        &attackLabel, &decayLabel, &sustainLabel, &releaseLabel,
-        &delayTimeLabel, &delayFeedbackLabel, &delayMixLabel
+    juce::Label* topLabels[] = {
+        &volumeLabel,& punchLabel,& pitchDecayLabel,& detuneLabel,& detuneMixLabel
     };
-
-    for (int i = 0; i < 12; ++i)
+    for (int i = 0; i < 5; ++i)
     {
         auto row = area.removeFromTop(24);
-        labels[i]->setBounds(row.removeFromLeft(120));
-        sliders[i]->setBounds(row);
+        topLabels[i]->setBounds(row.removeFromLeft(120));
+        topSliders[i]->setBounds(row);
         area.removeFromTop(4);
     }
-
+    // Fila del ComboBox de Forma de Onda del Oscilador 2
+    auto comboRow = area.removeFromTop(24);
+    osc2WaveLabel.setBounds(comboRow.removeFromLeft(120));
+    osc2WaveCombo.setBounds(comboRow);
+    area.removeFromTop(6);
+    // Resto de sliders (ADSR + Delay)
+    juce::Slider* bottomSliders[] = {
+    &attackSlider, &decaySlider, &sustainSlider, &releaseSlider,
+    &delayTimeSlider, &delayFeedbackSlider, &delayMixSlider
+    };
+    juce::Label* bottomLabels[] = {
+    &attackLabel, &decayLabel, &sustainLabel, &releaseLabel,
+    &delayTimeLabel, &delayFeedbackLabel, &delayMixLabel
+    };
+    for (int i = 0; i < 7; ++i)
+    {
+        auto row = area.removeFromTop(24);
+        bottomLabels[i]->setBounds(row.removeFromLeft(120));
+        bottomSliders[i]->setBounds(row);
+        area.removeFromTop(4);
+    }
     area.removeFromTop(8);
-
     // ==== MIDI ====
     midiLabel.setBounds(area.removeFromTop(22));
     area.removeFromTop(4);
