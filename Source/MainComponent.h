@@ -1,6 +1,7 @@
 #pragma once
 
 #include <JuceHeader.h>
+#include <vector>
 
 class MainComponent : public juce::AudioAppComponent,
     private juce::Timer
@@ -23,12 +24,12 @@ private:
     std::atomic<float> volume{ 0.5f };
     std::atomic<float> punchHz{ 180.0f };
     std::atomic<float> pitchDecay{ 0.045f };
-    std::atomic<float> detuneCents{ 15.0f };  // Desafinación en cents (-50 a +50)
-    std::atomic<float> detuneMix{ 0.5f };   // Volumen del segundo oscilador (0 a 1)
+    std::atomic<float> detuneCents{ 15.0f };
+    std::atomic<float> detuneMix{ 0.4f };
 
     double sr = 44100.0;
-    float phase = 0.0f;   // Fase Oscilador 1 (principal)
-    float phase2 = 0.0f;   // Fase Oscilador 2 (desafinado)
+    float phase = 0.0f;
+    float phase2 = 0.0f;
     float frequency = 55.0f;
     float pitchEnv = 0.0f;
 
@@ -57,6 +58,19 @@ private:
     juce::Label  decayLabel{ {}, "Decay" };
     juce::Label  sustainLabel{ {}, "Sustain" };
     juce::Label  releaseLabel{ {}, "Release" };
+
+    // ---- Efecto Delay (Buffer circular escrito a mano) ----
+    std::atomic<float> delayTimeSec{ 0.25f }; // Tiempo de retardo (s)
+    std::atomic<float> delayFeedback{ 0.40f }; // Realimentación (0 a 0.85)
+    std::atomic<float> delayMix{ 0.30f }; // Mezcla Dry/Wet (0 a 1)
+
+    std::vector<float> delayBuffer;
+    int delayWritePos = 0;
+
+    juce::Slider delayTimeSlider, delayFeedbackSlider, delayMixSlider;
+    juce::Label  delayTimeLabel{ {}, "Delay Time" };
+    juce::Label  delayFeedbackLabel{ {}, "Delay Feedback" };
+    juce::Label  delayMixLabel{ {}, "Delay Mix" };
 
     void setupSlider(juce::Slider& slider, juce::Label& label, double min, double max,
         std::atomic<float>& parameter, const juce::String& suffix);

@@ -15,12 +15,21 @@ MainComponent::MainComponent()
     setupSlider(sustainSlider, sustainLabel, 0.0, 1.0, sustain, "");
     setupSlider(releaseSlider, releaseLabel, 0.01, 1.5, release, " s");
 
-    // ==== MIDI ====
-    addAndMakeVisible(keyboardComponent);
-    addAndMakeVisible(midiLabel);
-    midiLabel.setText("Toca notas graves (C1 - C2) con el mouse o teclas Z, X, C...", juce::dontSendNotification);
+    // ---- Controles del Delay ----
+    setupSlider(delayTimeSlider, delayTimeLabel, 0.05, 1.0, delayTimeSec, " s");
+    setupSlider(delayFeedbackSlider, delayFeedbackLabel, 0.0, 0.85, delayFeedback, "");
+    setupSlider(delayMixSlider, delayMixLabel, 0.0, 1.0, delayMix, "");
 
-    setSize(700, 580);
+    // ==== MIDI y Foco de Teclado ====
+    addAndMakeVisible(keyboardComponent);
+    keyboardComponent.setWantsKeyboardFocus(true);
+    keyboardComponent.setKeyPressBaseOctave(3); // Arranca en octava grave ideal para bombo
+    juce::MessageManager::callAsync([this] { keyboardComponent.grabKeyboardFocus(); });
+
+    addAndMakeVisible(midiLabel);
+    midiLabel.setText("Teclas A S D F G H J K para tocar | Z / X para cambiar de octava", juce::dontSendNotification);
+
+    setSize(720, 660);
     setAudioChannels(0, 2);
 
     for (auto& input : juce::MidiInput::getAvailableDevices())
@@ -60,6 +69,12 @@ void MainComponent::prepareToPlay(int, double sampleRate)
     stage = Idle;
     envelope = 0.0f;
     pitchEnv = 0.0f;
+
+    // Preparamos el buffer circular de Delay para soportar hasta 2 segundos
+    int maxDelaySamples = (int)(sampleRate * 2.0);
+    delayBuffer.assign(maxDelaySamples, 0.0f);
+    delayWritePos = 0;
+
     midiCollector.reset(sampleRate);
 }
 
@@ -86,34 +101,60 @@ void MainComponent::renderSamples(juce::AudioBuffer<float>& buffer, int startSam
     float cents = detuneCents;
     float mix2 = detuneMix;
 
-    // Factor multiplicador de frecuencia para desafinar en cents (1200 cents = 1 octava)
+    float dTimeSec = delayTimeSec;
+    float dFeedback = delayFeedback;
+    float dMix = delayMix;
+
     float detuneFactor = std::pow(2.0f, cents / 1200.0f);
-
-    // Coeficiente de caída exponencial por muestra para la envolvente de tono
     float pitchDecayCoeff = std::exp(-1.0f / (pDecaySec * (float)sr));
-
-    // Normalización suave para que al sumar ambos osciladores no sature
     float normFactor = 1.0f / (1.0f + mix2);
+
+    // Calculamos cuántas muestras hacia atrás leer en el buffer circular del Delay
+    int delayBufferSize = (int)delayBuffer.size();
+    int delaySamples = juce::jlimit(1, delayBufferSize - 1, (int)(dTimeSec * (float)sr));
 
     for (int i = 0; i < numSamples; ++i)
     {
-        // 1. Calculamos las frecuencias instantáneas de ambos osciladores
+        // 1. Frecuencias instantáneas (Kick + Detune)
         float currentFreq1 = baseFreq + (punch * pitchEnv);
         float currentFreq2 = currentFreq1 * detuneFactor;
 
-        // 2. Generamos ambos osciladores sinusoidales y los mezclamos
+        // 2. Osciladores sinusoidales
         float osc1 = std::sin(juce::MathConstants<float>::twoPi * phase);
         float osc2 = std::sin(juce::MathConstants<float>::twoPi * phase2);
         float combinedOsc = (osc1 + osc2 * mix2) * normFactor;
 
-        // 3. Aplicamos la envolvente de volumen y la velocity
-        float sample = combinedOsc * nextEnvelopeValue() * velocityGain;
+        // 3. Señal seca (Dry) con envolvente de volumen
+        float drySample = combinedOsc * nextEnvelopeValue() * velocityGain;
 
+        // 4. Procesamiento de Delay (Buffer Circular)
+        float outSample = drySample;
+        if (delayBufferSize > 0)
+        {
+            int readPos = delayWritePos - delaySamples;
+            if (readPos < 0)
+                readPos += delayBufferSize;
+
+            float delayedSample = delayBuffer[readPos];
+
+            // Escribimos en el buffer: señal nueva + eco realimentado
+            delayBuffer[delayWritePos] = drySample + (delayedSample * dFeedback);
+
+            // Avanzamos el puntero circular
+            delayWritePos++;
+            if (delayWritePos >= delayBufferSize)
+                delayWritePos = 0;
+
+            // Mezclamos señal directa con el eco
+            outSample = drySample + (delayedSample * dMix);
+        }
+
+        // 5. Salida estéreo con volumen maestro
         int index = startSample + i;
         for (int channel = 0; channel < buffer.getNumChannels(); ++channel)
-            buffer.setSample(channel, index, sample * vol);
+            buffer.setSample(channel, index, outSample * vol);
 
-        // 4. Avanzamos ambas fases y la envolvente de tono
+        // 6. Actualización de fases y envolvente de tono
         phase += currentFreq1 / (float)sr;
         if (phase >= 1.0f)
             phase -= 1.0f;
@@ -142,7 +183,6 @@ void MainComponent::handleMidiMessage(const juce::MidiMessage& message)
         frequency = 440.0f * std::pow(2.0f, (currentNote - 81) / 12.0f);
         velocityGain = message.getVelocity() / 127.0f;
 
-        // Reiniciamos ambas fases en 0 para que el ataque sea limpio y potente
         phase = 0.0f;
         phase2 = 0.0f;
 
@@ -239,25 +279,27 @@ void MainComponent::resized()
 
     juce::Slider* sliders[] = {
         &volumeSlider, &punchSlider, &pitchDecaySlider, &detuneSlider, &detuneMixSlider,
-        &attackSlider, &decaySlider, &sustainSlider, &releaseSlider
+        &attackSlider, &decaySlider, &sustainSlider, &releaseSlider,
+        &delayTimeSlider, &delayFeedbackSlider, &delayMixSlider
     };
     juce::Label* labels[] = {
         &volumeLabel, &punchLabel, &pitchDecayLabel, &detuneLabel, &detuneMixLabel,
-        &attackLabel, &decayLabel, &sustainLabel, &releaseLabel
+        &attackLabel, &decayLabel, &sustainLabel, &releaseLabel,
+        &delayTimeLabel, &delayFeedbackLabel, &delayMixLabel
     };
 
-    for (int i = 0; i < 9; ++i)
+    for (int i = 0; i < 12; ++i)
     {
-        auto row = area.removeFromTop(26);
-        labels[i]->setBounds(row.removeFromLeft(115));
+        auto row = area.removeFromTop(24);
+        labels[i]->setBounds(row.removeFromLeft(120));
         sliders[i]->setBounds(row);
-        area.removeFromTop(5);
+        area.removeFromTop(4);
     }
 
-    area.removeFromTop(10);
+    area.removeFromTop(8);
 
     // ==== MIDI ====
-    midiLabel.setBounds(area.removeFromTop(25));
-    area.removeFromTop(5);
-    keyboardComponent.setBounds(area.removeFromTop(100));
+    midiLabel.setBounds(area.removeFromTop(22));
+    area.removeFromTop(4);
+    keyboardComponent.setBounds(area.removeFromTop(95));
 }
